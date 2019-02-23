@@ -6,13 +6,11 @@ import json
 import warnings
 
 
-
 __all__ = ['Biography']
 
 
 class Patched:
     pass
-
 
 class Biography:
     def __init__(self):
@@ -20,16 +18,17 @@ class Biography:
         self.frames = ['<module>']
 
     def wrap(self, func, module=None):
+        patched = None
         if inspect.ismodule(func):
             patched = Patched()
-            for name in dir(func):
-                f = getattr(func, name)
-                if inspect.isclass(f) and not name.startswith('_'):
-                    setattr(patched, name, self.wrap(f, module=func.__name__))
-                    setattr(patched, '__wrapped__', f)
-                elif callable(f) and not name.startswith('_'):
-                    setattr(patched, name, self.__call__(f, module=func.__name__))
-                    setattr(patched, '__wrapped__', f)
+            for name, f in inspect.getmembers(func):
+                if not name.startswith('_'):
+                    if inspect.isclass(f):
+                        setattr(patched, name, self.wrap(f, module=func.__name__))
+                    elif hasattr(f, '__call__'):
+                        setattr(patched, name, self.wrap(f, module=func.__name__))
+                    else:
+                        setattr(patched, name, f)
                 else:
                     try:
                         setattr(patched, name, f)
@@ -37,27 +36,29 @@ class Biography:
                         pass
             patched.__wrapped__ = func
         elif inspect.isclass(func):
-            if len(func.__mro__) == 1 or \
-                func.__qualname__ == 'type':
-                return func
+            # if len(func.__mro__) == 1 or \
+            #     func.__qualname__ == 'type':
+            #     return func
+            # patched = class_wraps(func, self, module=module)
             patched = self.__call__(func, module=module)
             if not func.__name__.startswith('_'):
-                for name in dir(func):
-                    f = getattr(func, name)
-                    if inspect.isclass(f) and not name.startswith('_'):
-                        setattr(patched, name, self.wrap(f, module=func.__name__))
-                        setattr(patched, '__wrapped__', f)
-                    elif callable(f) and not name.startswith('_'):
-                        setattr(patched, name, self.__call__(f, module=module))
-                        setattr(patched, '__wrapped__', f)
+                for name, f in inspect.getmembers(func):
+                    if not name.startswith('_'):
+                        if inspect.isclass(f):
+                            setattr(patched, name, self.wrap(f, module=module))
+                        elif hasattr(f, '__call__'):
+                            setattr(patched, name, self.wrap(f, module=module))
+                        else:
+                            setattr(patched, name, f)
                     else:
                         try:
                             setattr(patched, name, f)
                         except (TypeError, AttributeError) as e:
                             pass
+            patched.__call__ = self.__call__(func.__call__, module=module)
             patched.__wrapped__ = func
-        elif callable(func):
-            patched = self.__call__(func)
+        elif hasattr(func, '__call__'):
+            patched = self.__call__(func, module=module)
             patched.__wrapped__ = func
         else:
             warnings.warn('`{}` is not a module, class, or callable'.format(repr(func)),
@@ -97,7 +98,26 @@ class Biography:
         return '\n'.join([i.to_csv(sep=sep) for i in self.entries])
 
     def __call__(self, lambda_func=None, module=None):
-        if lambda_func:
+        if inspect.isclass(lambda_func):
+            @wraps(lambda_func)
+            def func_wrapper(*func_args, **func_kwargs):
+                out = type.__call__(lambda_func, *func_args, **func_kwargs)
+                # print(sys._getframe().f_back.f_code.co_name)
+                for name, f in inspect.getmembers(out):
+                    if not name.startswith('_') and callable(f):
+                        try:
+                            print(f.__name__)
+                            setattr(out, name, self.wrap(f, module=module))
+                        except Exception as e:
+                            # print(name, e)
+                            pass
+                if sys._getframe().f_back.f_code.co_name in self.frames:
+                    entry = Operation(lambda_func, args=func_args, module=module)
+                    self.entries.append(entry)
+                return out
+            return func_wrapper
+
+        else:
             @wraps(lambda_func)
             def func_wrapper(*func_args, **func_kwargs):
                 out = lambda_func(*func_args, **func_kwargs)
