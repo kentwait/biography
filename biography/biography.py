@@ -3,84 +3,71 @@ from datetime import datetime
 import sys
 import inspect
 import json
+import warnings
+
 
 
 __all__ = ['Biography']
+
+
+class Patched:
+    pass
 
 
 class Biography:
     def __init__(self):
         self.entries = []
         self.frames = ['<module>']
-        self.included = []
 
-    # Add ability to monkey-patch other functions
-    def include(self, func, module=None):
+    def wrap(self, func, module=None):
         if inspect.ismodule(func):
-            self.included.append(func)
-            for name, f in inspect.getmembers(func):
-                try:
-                    if inspect.isfunction(f) and not f.__name__.startswith('_'):
-                        setattr(func, name, self.__call__(f, module=func.__name__))
-                except Exception as e:
-                    # TODO: raise warning
-                    pass
-
-                try:
-                    if inspect.isclass(f) and not f.__name__.startswith('_'):
-                        # setattr(func, name, self.__call__(f, module=func.__name__))
-                        self.include(f, module=func.__name__)
-                except Exception as e:
-                    # TODO: raise warning
-                    pass
-
-        elif inspect.isclass(func):
-            self.included.append(func)
-            setattr(func, '__init__', self.__call__(func.__init__, module=func.__name__))
-            if not func.__name__.startswith('_'):
-                for name, f in inspect.getmembers(func):
+            patched = Patched()
+            for name in dir(func):
+                f = getattr(func, name)
+                if inspect.isclass(f) and not name.startswith('_'):
+                    setattr(patched, name, self.wrap(f, module=func.__name__))
+                    setattr(patched, '__wrapped__', f)
+                elif callable(f) and not name.startswith('_'):
+                    setattr(patched, name, self.__call__(f, module=func.__name__))
+                    setattr(patched, '__wrapped__', f)
+                else:
                     try:
-                        if inspect.isfunction(f) and not f.__name__.startswith('_'):
-                            setattr(func, name, self.__call__(f, module=module))
-                    except Exception as e:
-                        # TODO: raise warning
+                        setattr(patched, name, f)
+                    except (TypeError, AttributeError) as e:
                         pass
-
-    def exclude(self, func):
-        if inspect.ismodule(func) and func in self.included:
-            for name, f in inspect.getmembers(func):
-                if inspect.isfunction(f) and not f.__name__.startswith('_'):
-                    while hasattr(f, '__biography_wrapped__'):
-                        setattr(func, name, f.__biography_wrapped__)
-                        f = getattr(func, name)
-                elif inspect.isclass(f) and not f.__name__.startswith('_'):
-                        self.exclude(f)
-            self.included.remove(func)
-
-        elif inspect.isclass(func) and func in self.included:
+            patched.__wrapped__ = func
+        elif inspect.isclass(func):
+            if len(func.__mro__) == 1 or \
+                func.__qualname__ == 'type':
+                return func
+            patched = self.__call__(func, module=module)
             if not func.__name__.startswith('_'):
-                while hasattr(func.__init__, '__biography_wrapped__'):
-                    setattr(func, '__init__', func.__init__.__biography_wrapped__)
-                for name, f in inspect.getmembers(func):
-                    if inspect.isfunction(f) and not f.__name__.startswith('_'):
-                        while hasattr(f, '__biography_wrapped__'):
-                            setattr(func, name, f.__biography_wrapped__)
-                            f = getattr(func, name)
-            self.included.remove(func)            
-
-    def wrap(func):
-        if inspect.isfunction(func):
-            return self.__call__(func)
+                for name in dir(func):
+                    f = getattr(func, name)
+                    if inspect.isclass(f) and not name.startswith('_'):
+                        setattr(patched, name, self.wrap(f, module=func.__name__))
+                        setattr(patched, '__wrapped__', f)
+                    elif callable(f) and not name.startswith('_'):
+                        setattr(patched, name, self.__call__(f, module=module))
+                        setattr(patched, '__wrapped__', f)
+                    else:
+                        try:
+                            setattr(patched, name, f)
+                        except (TypeError, AttributeError) as e:
+                            pass
+            patched.__wrapped__ = func
+        elif callable(func):
+            patched = self.__call__(func)
+            patched.__wrapped__ = func
         else:
-            raise ValueError('not a function')
+            warnings.warn('`{}` is not a module, class, or callable'.format(repr(func)),
+                RuntimeWarning)
 
-    def unwrap(func):
-        if inspect.isfunction(func):
-            while hasattr(func, '__biography_wrapped__'):
-                func = func.__biography_wrapped__
-                delattr(func, '__biography_wrapped__')
-        else:
-            raise ValueError('not a function')
+        return patched
+
+    def unwrap(self, func):
+        while hasattr(func, '__wrapped__'):
+            func = func.__wrapped__
         return func
 
     def include_frame(self, name):
@@ -114,25 +101,23 @@ class Biography:
             @wraps(lambda_func)
             def func_wrapper(*func_args, **func_kwargs):
                 out = lambda_func(*func_args, **func_kwargs)
+                # print(sys._getframe().f_back.f_code.co_name)
                 if sys._getframe().f_back.f_code.co_name in self.frames:
                     entry = Operation(lambda_func, args=func_args, module=module)
                     self.entries.append(entry)
                 return out
-            wrapped = func_wrapper
-            wrapped.__biography_wrapped__ = lambda_func
-            return wrapped
+            return func_wrapper
 
         def decorator(func):
             @wraps(func)
             def func_wrapper(*func_args, **func_kwargs):
                 out = func(*func_args, **func_kwargs)
+                # print(sys._getframe().f_back.f_code.co_name)
                 if sys._getframe().f_back.f_code.co_name in self.frames:
                     entry = Operation(func, args=func_args, kwargs=func_kwargs)
                     self.entries.append(entry)
                 return out
-            wrapped = func_wrapper
-            wrapped.__biography_wrapped__ = func
-            return wrapped
+            return func_wrapper
         return decorator
 
     def __str__(self):
@@ -247,7 +232,7 @@ class Operation:
     def __repr__(self):
         return '<{clsname} datetime={dt} statement={op}({params})>'.format(
             clsname=self.__class__.__name__,
-            dt=self.datetime.strftime('%m/%d/%Y|%H:%M:%S'),
+            dt=self.datetime.strftime('%m/%d/%YT%H:%M:%S'),
             op=self.operation,
             params='...' if len(self.args) > 0 or len(self.kwargs) > 0 else ''
         )
@@ -318,6 +303,6 @@ class Comment:
     def __repr__(self):
         return '<{clsname} datetime={dt} comment="{msg}">'.format(
             clsname=self.__class__.__name__,
-            dt=self.datetime.strftime('%m/%d/%Y|%H:%M:%S'),
+            dt=self.datetime.strftime('%m/%d/%YT%H:%M:%S'),
             msg=self.comment,
         )
