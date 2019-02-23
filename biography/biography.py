@@ -9,67 +9,109 @@ import warnings
 __all__ = ['Biography']
 
 
-class Patched:
+class PatchedModule:
     pass
 
-class Biography:
+
+class PatchedClass:
+    def __init__(self, builtin, reporter, module=None):
+        self._builtin = builtin
+        self._reporter = reporter
+        self._module = module
+    
+    def __getattribute__(self, name):
+        if name in ['_builtin', '_reporter', '_module']:
+            return object.__getattribute__(self, name)
+        else:
+            func = self._builtin.__getattribute__(name)    
+            if not name.startswith('_') and callable(func):
+                return self._reporter.watch_function(
+                    func, module=self._module)
+            return func
+
+    def __call__(self, *args, **kwargs):
+        res = PatchedClass(self._builtin(*args, **kwargs), self._reporter,
+                      module=self._module)
+        if sys._getframe().f_back.f_code.co_name in self._reporter.frames:
+            entry = Operation(self._builtin, args=args, kwargs=kwargs,
+                module=self._module)
+            self._reporter.entries.append(entry)
+        self._reporter.tracked.append(self._builtin)
+        return res
+
+    def __repr__(self):
+        return self._builtin.__repr__()
+
+
+class Reporter:
     def __init__(self):
         self.entries = []
         self.frames = ['<module>']
+        self.tracked = []
 
-    def wrap(self, func, module=None):
-        patched = None
-        if inspect.ismodule(func):
-            patched = Patched()
-            for name, f in inspect.getmembers(func):
-                if not name.startswith('_'):
-                    if inspect.isclass(f):
-                        setattr(patched, name, self.wrap(f, module=func.__name__))
-                    elif hasattr(f, '__call__'):
-                        setattr(patched, name, self.wrap(f, module=func.__name__))
-                    else:
-                        setattr(patched, name, f)
+    def watch(self, x):
+        if inspect.ismodule(x):
+            return self.watch_module(x)
+        elif inspect.isclass(x):
+            return self.watch_class(x)
+        elif inspect.ismethod(x):
+            return self.watch_method(x)
+        elif inspect.isfunction(x):
+            return self.watch_function(x)
+        elif inspect.isbuiltin(x):
+            return self.watch_builtin(x)
+        raise ValueError('cannot watch unknown entity')
+    
+    def forget(self, x):
+        pass
+
+    def watch_function(self, func, module=None):
+        @wraps(func)
+        def func_wrapper(*func_args, **func_kwargs):
+            out = func(*func_args, **func_kwargs)
+            # print(sys._getframe().f_back.f_code.co_name)
+            if sys._getframe().f_back.f_code.co_name in self.frames:
+                entry = Operation(func, args=func_args, kwargs=func_kwargs,
+                                  module=module)
+                self.entries.append(entry)
+            self.tracked.append(func)
+            return out
+        return func_wrapper
+
+    def watch_method(self, func, module=None):
+        return self.watch_funct(func, module=module)
+
+    def watch_class(self, cls=None, module=None):
+        return self.watch_builtin(cls, module=module)
+
+    def watch_builtin(self, cls, module=None):
+        out = PatchedClass(cls, self, module=module)
+        self.tracked.append(cls)
+        return out
+
+    def watch_module(self, module):
+        patched = PatchedModule()
+        for attr, func in inspect.getmembers(module):
+            if not attr.startswith('_'):
+                if inspect.isclass(func):
+                    setattr(patched, attr,
+                            self.watch_class(func, module=module.__name__))
+                elif inspect.isfunction(func):
+                    setattr(patched, attr,
+                            self.watch_function(func, module=module.__name__))
+                elif inspect.isbuiltin(func):
+                    setattr(patched, attr,
+                            self.watch_builtin(func, module=module.__name__))
                 else:
-                    try:
-                        setattr(patched, name, f)
-                    except (TypeError, AttributeError) as e:
-                        pass
-            patched.__wrapped__ = func
-        elif inspect.isclass(func):
-            # if len(func.__mro__) == 1 or \
-            #     func.__qualname__ == 'type':
-            #     return func
-            # patched = class_wraps(func, self, module=module)
-            patched = self.__call__(func, module=module)
-            if not func.__name__.startswith('_'):
-                for name, f in inspect.getmembers(func):
-                    if not name.startswith('_'):
-                        if inspect.isclass(f):
-                            setattr(patched, name, self.wrap(f, module=module))
-                        elif hasattr(f, '__call__'):
-                            setattr(patched, name, self.wrap(f, module=module))
-                        else:
-                            setattr(patched, name, f)
-                    else:
-                        try:
-                            setattr(patched, name, f)
-                        except (TypeError, AttributeError) as e:
-                            pass
-            patched.__call__ = self.__call__(func.__call__, module=module)
-            patched.__wrapped__ = func
-        elif hasattr(func, '__call__'):
-            patched = self.__call__(func, module=module)
-            patched.__wrapped__ = func
-        else:
-            warnings.warn('`{}` is not a module, class, or callable'.format(repr(func)),
-                RuntimeWarning)
-
+                    setattr(patched, attr, func)
+            else:
+                try:
+                    setattr(patched, attr, func)
+                except (TypeError, AttributeError) as e:
+                    pass
+        patched.__wrapped__ = module
+        self.tracked.append(module)
         return patched
-
-    def unwrap(self, func):
-        while hasattr(func, '__wrapped__'):
-            func = func.__wrapped__
-        return func
 
     def include_frame(self, name):
         self.frames.append(name)
@@ -97,54 +139,12 @@ class Biography:
     def to_csv(self, path=None, sep='\t'):
         return '\n'.join([i.to_csv(sep=sep) for i in self.entries])
 
-    def __call__(self, lambda_func=None, module=None):
-        if inspect.isclass(lambda_func):
-            @wraps(lambda_func)
-            def func_wrapper(*func_args, **func_kwargs):
-                out = type.__call__(lambda_func, *func_args, **func_kwargs)
-                # print(sys._getframe().f_back.f_code.co_name)
-                for name, f in inspect.getmembers(out):
-                    if not name.startswith('_') and callable(f):
-                        try:
-                            print(f.__name__)
-                            setattr(out, name, self.wrap(f, module=module))
-                        except Exception as e:
-                            # print(name, e)
-                            pass
-                if sys._getframe().f_back.f_code.co_name in self.frames:
-                    entry = Operation(lambda_func, args=func_args, module=module)
-                    self.entries.append(entry)
-                return out
-            return func_wrapper
-
-        else:
-            @wraps(lambda_func)
-            def func_wrapper(*func_args, **func_kwargs):
-                out = lambda_func(*func_args, **func_kwargs)
-                # print(sys._getframe().f_back.f_code.co_name)
-                if sys._getframe().f_back.f_code.co_name in self.frames:
-                    entry = Operation(lambda_func, args=func_args, module=module)
-                    self.entries.append(entry)
-                return out
-            return func_wrapper
-
-        def decorator(func):
-            @wraps(func)
-            def func_wrapper(*func_args, **func_kwargs):
-                out = func(*func_args, **func_kwargs)
-                # print(sys._getframe().f_back.f_code.co_name)
-                if sys._getframe().f_back.f_code.co_name in self.frames:
-                    entry = Operation(func, args=func_args, kwargs=func_kwargs)
-                    self.entries.append(entry)
-                return out
-            return func_wrapper
-        return decorator
-
     def __str__(self):
         return '\n'.join([str(item) for item in self.entries])
 
     def __repr__(self):
         return repr(self.entries)
+
 
 class Operation:
     def __init__(self, operation, args=None, kwargs=None,
