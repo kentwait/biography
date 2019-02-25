@@ -11,7 +11,7 @@ __all__ = [
 class Operation:
     def __init__(self, operation, args=None, kwargs=None,
                  str_formatter=None, module=None):
-        self.operation = operation.__qualname__
+        self.operation = operation.__qualname__  # BUG: fails on some objects like pandas.core.indexing._iLocIndexer
         self.optype = 'operation'
         if module:
             self.operation = '.'.join([module, self.operation])
