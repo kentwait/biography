@@ -80,7 +80,7 @@ class Reporter:
             return self.watch_function(x)
         elif inspect.isbuiltin(x):
             return self.watch_builtin(x)
-        raise ValueError('cannot watch unknown entity')
+        raise ValueError('cannot watch unrecognized entity')
     
     def forget(self, x):
         pass
@@ -99,7 +99,7 @@ class Reporter:
         return func_wrapper
 
     def watch_method(self, func, module=None, op=Method):
-        return self.watch_func(func, module=module, op=op)
+        return self.watch_function(func, module=module, op=op)
 
     def watch_class(self, cls=None, module=None):
         return self.watch_builtin(cls, module=module)
