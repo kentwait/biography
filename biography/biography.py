@@ -30,7 +30,7 @@ class PatchedClass:
             return func
 
     def __call__(self, *args, **kwargs):
-        res = PatchedClass(self._builtin(*args, **kwargs), self._reporter,
+        res = PatchedInstance(self._builtin(*args, **kwargs), self._reporter,
                       module=self._module)
         if sys._getframe().f_back.f_code.co_name in self._reporter.frames:
             entry = Create(self._builtin, args=args, kwargs=kwargs,
@@ -38,6 +38,26 @@ class PatchedClass:
             self._reporter.entries.append(entry)
         self._reporter.tracked.append(self._builtin)
         return res
+
+    def __repr__(self):
+        return self._builtin.__repr__()
+
+
+class PatchedInstance:
+    def __init__(self, instance, reporter, module=None):
+        self._builtin = instance
+        self._reporter = reporter
+        self._module = module
+    
+    def __getattribute__(self, name):
+        if name in ['_builtin', '_reporter', '_module']:
+            return object.__getattribute__(self, name)
+        else:
+            func = self._builtin.__getattribute__(name)    
+            if not name.startswith('_') and callable(func):
+                return self._reporter.watch_method(
+                    func, module=self._module)
+            return func
 
     def __repr__(self):
         return self._builtin.__repr__()
@@ -79,7 +99,7 @@ class Reporter:
         return func_wrapper
 
     def watch_method(self, func, module=None, op=Method):
-        return self.watch_funct(func, module=module, op=op)
+        return self.watch_func(func, module=module, op=op)
 
     def watch_class(self, cls=None, module=None):
         return self.watch_builtin(cls, module=module)
@@ -87,6 +107,11 @@ class Reporter:
     def watch_builtin(self, cls, module=None):
         out = PatchedClass(cls, self, module=module)
         self.tracked.append(cls)
+        return out
+
+    def watch_instance(self, instance, module=None):
+        out = PatchedInstance(instance, self, module=module)
+        self.tracked.append(instance)
         return out
 
     def watch_module(self, module):
